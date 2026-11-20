@@ -1,0 +1,44 @@
+[project]
+name = "bacc"
+version = "0.6.0"
+description = "Import the BA-characters-internal-id release CSV into a searchable SQLite catalog"
+readme = "README.md"
+authors = [
+    { name = "com55", email = "33087300+com55@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "platformdirs>=4.14.7",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+]
+
+[project.scripts]
+bacc = "bacc.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/com55/BACC"
+Repository = "https://github.com/com55/BACC"
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"

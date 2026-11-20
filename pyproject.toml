@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "com55", email = "33087300+com55@users.noreply.github.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
@@ -37,7 +37,7 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py311"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

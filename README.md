@@ -1,7 +1,7 @@
 # Blue Archive Characters Catalog (BACC)
 
 Import the [`BA-characters-internal-id`](https://github.com/Agent-0808/BA-characters-internal-id)
-release CSV into a searchable SQLite catalog. Python 3.13+; the only dependency is `platformdirs`.
+release CSV into a searchable SQLite catalog. Python 3.11+; the only dependency is `platformdirs`.
 
 ## Layout
 

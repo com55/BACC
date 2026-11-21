@@ -9,9 +9,10 @@ import tempfile
 from importlib.resources import files
 from pathlib import Path
 
-from .naming import make_display
+from .naming import MODES, NameOverride, make_display
 
 PACKAGED_GLOSSARY = 'spine_remark_translate.json'
+PACKAGED_NAME_OVERRIDES = 'name_overrides.json'
 
 
 def packaged_translations() -> dict[str, str]:
@@ -58,7 +59,7 @@ def _validate(data: object) -> dict[str, str]:
     return data
 
 
-def save_translations(path: Path, translations: dict[str, str]) -> None:
+def save_translations(path: Path, translations: dict) -> None:
     """Atomic rewrite. Preserve existing keys/values, add new terms only."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,15 +76,82 @@ def save_translations(path: Path, translations: dict[str, str]) -> None:
             os.unlink(name)
 
 
-def sync_translations(con: sqlite3.Connection, translations: dict[str, str]) -> int:
-    """Recompute display names from the original CSV metadata, without network."""
+def _parse_overrides(data: object) -> dict[str, NameOverride]:
+    """``{"NP0018": "Name"}`` or ``{"NP0018": {"name": "Name", "mode": "full"}}``."""
+    if not isinstance(data, dict):
+        raise ValueError(  # noqa: TRY004
+            'Name override JSON must be an object: {"NP0018": "English name"}'
+        )
+    result: dict[str, NameOverride] = {}
+    for file_id, value in data.items():
+        if not isinstance(file_id, str) or not file_id:
+            raise ValueError('Every name override needs a nonempty file ID as its key')
+        if isinstance(value, str):
+            result[file_id] = NameOverride(value.strip())
+        elif isinstance(value, dict) and isinstance(value.get('name'), str):
+            mode = value.get('mode', 'base')
+            if mode not in MODES:
+                raise ValueError(f'{file_id}: mode must be one of {MODES}, not {mode!r}')
+            result[file_id] = NameOverride(value['name'].strip(), mode)
+        else:
+            raise ValueError(  # noqa: TRY004
+                f'{file_id}: expected a name, or an object with "name" and "mode"'
+            )
+    return result
+
+
+def packaged_name_overrides() -> dict[str, NameOverride]:
+    """The name overrides shipped inside the package."""
+    text = files('bacc').joinpath(PACKAGED_NAME_OVERRIDES).read_text('utf-8')
+    return _parse_overrides(json.loads(text))
+
+
+def read_name_overrides(path: Path) -> dict[str, NameOverride]:
+    """Your own entries: the data directory file, or ``{}`` when there is none yet."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    return _parse_overrides(json.loads(path.read_text(encoding='utf-8-sig')))
+
+
+def merged_name_overrides(path: Path) -> dict[str, NameOverride]:
+    """The overrides in effect: the packaged ones, overridden by your non-empty entries."""
+    mine = {key: entry for key, entry in read_name_overrides(path).items() if entry.name}
+    return {**packaged_name_overrides(), **mine}
+
+
+def save_name_overrides(path: Path, overrides: dict[str, NameOverride]) -> None:
+    """Atomic rewrite; a base-mode entry is a plain string, a full-mode one an object."""
+    save_translations(
+        path,
+        {
+            key: entry.name if entry.mode == 'base' else {'name': entry.name, 'mode': entry.mode}
+            for key, entry in overrides.items()
+        },
+    )
+
+
+def sync_translations(
+    con: sqlite3.Connection,
+    translations: dict[str, str],
+    overrides: dict[str, NameOverride] | None = None,
+) -> int:
+    """Recompute display names from the original CSV metadata, without network.
+
+    ``overrides`` rename the file IDs it lists; everything else is derived from
+    the glossary and the source fields.
+    """
+    overrides = overrides or {}
     updates = []
     for r in con.execute('SELECT id, source_json, spine_remark FROM variants'):
         source = json.loads(r['source_json'])
         translated = translations.get(r['spine_remark'], '').strip()
-        updates.append((translated, make_display(source, translated), r['id']))
+        override = overrides.get(source['file_id'])
+        given = (override.name if override else '') or source['given_en']
+        updates.append((translated, make_display(source, translated, override), given, r['id']))
     with con:
         con.executemany(
-            'UPDATE variants SET spine_remark_en=?, display_name_en=? WHERE id=?', updates
+            'UPDATE variants SET spine_remark_en=?, display_name_en=?, given_en=? WHERE id=?',
+            updates,
         )
     return len(updates)

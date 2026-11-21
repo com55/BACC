@@ -21,9 +21,11 @@ from bacc import (
     read_translations,
     remote,
 )
+from bacc import translations as translations_module
 from bacc.db import claim_check, defer_check, mark_checked, release_claim, should_check
+from bacc.naming import NameOverride
 from bacc.remote import Release, ReleaseData, fetch_release_data
-from bacc.translations import packaged_translations
+from bacc.translations import packaged_name_overrides, packaged_translations, read_name_overrides
 
 RELEASE = Release(tag='t1', csv_url='https://x/csv', zip_url='https://x/zip')
 INTERVAL = timedelta(hours=4)
@@ -566,3 +568,208 @@ def test_save_release_files_refuses_unsafe_names(tmp_path):
     with pytest.raises(InvalidDataError):
         remote.save_release_files({'../x': b'1'}, tmp_path / 'release')
     assert list(tmp_path.iterdir()) == []
+
+
+# --- name overrides (packaged + yours, like the glossary) ---------------------
+
+
+def _display(cat, file_id):
+    return sorted((v.spine_id, v.display_name_en) for v in cat.variants(file_id=file_id))
+
+
+def test_base_mode_replaces_only_the_base_name(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0001', 'Renamed')
+    assert _display(catalog, 'TS0001') == [('100', 'Renamed'), ('101', 'Renamed (Swimsuit)')]
+    first = catalog.variants(file_id='TS0001')[0]
+    assert first.given_en == 'Renamed' and first.source['given_en'] == 'Alpha'  # original kept
+    assert catalog.search('renamed', refresh=False)
+    assert catalog.name_overrides()['TS0001'] == NameOverride('Renamed', 'base')
+
+
+def test_full_mode_replaces_the_whole_display_name(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0001', 'Whole Name', mode='full')
+    assert _display(catalog, 'TS0001') == [('100', 'Whole Name'), ('101', 'Whole Name')]
+    assert catalog.name_overrides()['TS0001'].mode == 'full'
+
+
+def test_every_row_sharing_a_file_id_gets_the_override(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0020', 'Gamma Two')
+    assert dict(_display(catalog, 'TS0020')) == {'120': 'Gamma Two', '121': 'Gamma Two (Battle-Damaged)'}
+
+
+def test_override_survives_reimport_and_removal_restores_the_source(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0010', 'Mine')
+    catalog.import_csv(CSV)
+    assert _display(catalog, 'TS0010') == [('110', 'Mine')]
+    catalog.set_name_override('TS0010', '')
+    assert _display(catalog, 'TS0010') == [('110', 'Beta')]
+    assert catalog.name_overrides() == packaged_name_overrides()
+
+
+def test_overrides_leave_other_file_ids_alone(catalog):
+    catalog.import_csv(CSV)
+    before = _display(catalog, 'TS0011')
+    catalog.set_name_override('TS0010', 'Mine')
+    assert _display(catalog, 'TS0011') == before
+
+
+def test_yours_file_stores_base_as_text_and_full_as_object(catalog):
+    catalog.set_name_override('A1', 'Plain')
+    catalog.set_name_override('B2', 'Whole', mode='full')
+    assert json.loads(catalog.name_overrides_path.read_text()) == {
+        'A1': 'Plain', 'B2': {'name': 'Whole', 'mode': 'full'},
+    }
+    assert read_name_overrides(catalog.name_overrides_path) == {
+        'A1': NameOverride('Plain'), 'B2': NameOverride('Whole', 'full'),
+    }
+
+
+def test_packaged_overrides_are_the_base_and_yours_win(catalog, monkeypatch):
+    packaged = {'TS0010': NameOverride('Packaged B', 'full'), 'TS0020': NameOverride('Packaged C')}
+    monkeypatch.setattr(translations_module, 'packaged_name_overrides', lambda: packaged)
+    catalog.import_csv(CSV)
+    assert not catalog.name_overrides_path.exists()  # importing never writes the file
+    assert dict(_display(catalog, 'TS0010')) == {'110': 'Packaged B'}
+    catalog.set_name_override('TS0010', 'Mine')
+    assert catalog.name_overrides() == {'TS0010': NameOverride('Mine'), 'TS0020': packaged['TS0020']}
+    assert set(read_name_overrides(catalog.name_overrides_path)) == {'TS0010'}  # only yours on disk
+    assert dict(_display(catalog, 'TS0010')) == {'110': 'Mine'}
+    catalog.set_name_override('TS0010', '')  # removing yours brings the packaged one back
+    assert dict(_display(catalog, 'TS0010')) == {'110': 'Packaged B'}
+
+
+def test_empty_user_name_does_not_blank_a_packaged_one(catalog, monkeypatch):
+    monkeypatch.setattr(translations_module, 'packaged_name_overrides',
+                        lambda: {'TS0010': NameOverride('Packaged B')})
+    catalog.name_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog.name_overrides_path.write_text('{"TS0010": ""}')
+    catalog.import_csv(CSV)
+    assert dict(_display(catalog, 'TS0010')) == {'110': 'Packaged B'}
+
+
+def test_the_shipped_overrides_are_the_three_agreed_entries():
+    assert packaged_name_overrides() == {
+        'NP0018': NameOverride('Oil Drum', 'full'),
+        'NP0081': NameOverride('Asuna (School)', 'full'),
+        'NP0082': NameOverride('Karin (School)', 'full'),
+    }
+
+
+@pytest.mark.parametrize('text', ['["x"]', '{"A": 1}', '{"A": {"mode": "full"}}',
+                                  '{"A": {"name": "x", "mode": "half"}}', '{"": "x"}'])
+def test_bad_overrides_file_is_rejected(catalog, text):
+    catalog.name_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog.name_overrides_path.write_text(text)
+    with pytest.raises(ValueError):
+        catalog.name_overrides()
+
+
+def test_bad_arguments_are_rejected(catalog):
+    with pytest.raises(ValueError):
+        catalog.set_name_override('  ', 'x')
+    with pytest.raises(ValueError):
+        catalog.set_name_override('A', 'x', mode='half')
+
+
+# --- field:value search -------------------------------------------------------
+
+
+def _ids(hits):
+    return sorted((v.file_id, v.spine_id) for v in hits)
+
+
+def test_field_scoped_search_hits_only_that_field(catalog):
+    catalog.import_csv(CSV)
+    hits = catalog.search('file_id:TS0001', limit=100, refresh=False)
+    assert _ids(hits) == [('TS0001', '100'), ('TS0001', '101')]
+    assert all(v.matched == (('file_id', 'TS0001'),) for v in hits)
+    # the same text as a plain word also finds rows through other fields; scoped must not
+    assert catalog.search('file_id:Alpha', refresh=False) == []
+    assert catalog.search('given_en:Alpha', limit=100, refresh=False)
+
+
+def test_scoped_and_plain_tokens_combine_with_and(catalog):
+    catalog.import_csv(CSV)
+    hits = catalog.search('file_id:TS0001 swimsuit', limit=100, refresh=False)
+    assert _ids(hits) == [('TS0001', '101')]
+    assert catalog.search('file_id:TS0001 zzznotaword', refresh=False) == []
+    both = catalog.search('file_id:TS0020 spine_remark:战损', limit=100, refresh=False)
+    assert _ids(both) == [('TS0020', '121')]
+
+
+def test_scoped_search_reaches_csv_fields_and_derived_columns(catalog):
+    catalog.import_csv(CSV)
+    assert _ids(catalog.search('full_cn:测试Alpha', limit=100, refresh=False))  # source_json field
+    assert catalog.search('display_name_en:swimsuit', limit=100, refresh=False)
+    catalog.set_name_override('TS0010', 'Mine')
+    assert _ids(catalog.search('given_en:Mine', refresh=False)) == [('TS0010', '110')]
+
+
+def test_unknown_field_prefix_is_an_ordinary_word(catalog):
+    catalog.import_csv(CSV)
+    assert catalog.search('nosuchfield:TS0001', refresh=False) == []  # a word nobody contains
+    assert catalog.search('file_id:', refresh=False) == []            # no value: plain word too
+    assert catalog.search('"; DROP TABLE variants; --', refresh=False) == []
+    assert catalog.stats().variants == 8
+
+
+def test_scoped_value_wildcards_are_literal(catalog):
+    catalog.import_csv(CSV)
+    assert catalog.search('file_id:%', refresh=False) == []
+    assert catalog.search('file_id:TS_001', refresh=False) == []
+
+
+# --- quoted tokens and exact (field=value) search -----------------------------
+
+
+def test_quotes_keep_spaces_inside_one_token(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0010', 'Oil Drum', mode='full')
+    for query in ('"display_name_en:Oil Drum"', 'display_name_en:"Oil Drum"'):
+        assert _ids(catalog.search(query, refresh=False)) == [('TS0010', '110')], query
+    # a quoted plain phrase must sit in one field in that order
+    assert _ids(catalog.search('"Oil Drum"', refresh=False)) == [('TS0010', '110')]
+    assert catalog.search('"Drum Oil"', refresh=False) == []
+
+
+def test_unbalanced_quote_and_apostrophes_are_plain_text(catalog):
+    catalog.import_csv(CSV)
+    assert catalog.search('"alpha', limit=100, refresh=False) == []  # literal quote, no row has it
+    assert catalog.search("don't", refresh=False) == []
+    assert catalog.search('alpha', limit=100, refresh=False)
+
+
+def test_exact_search_needs_the_whole_value(catalog):
+    catalog.import_csv(CSV)
+    assert _ids(catalog.search('file_id=TS0001', limit=100, refresh=False)) == [
+        ('TS0001', '100'), ('TS0001', '101')]
+    assert catalog.search('file_id=TS000', refresh=False) == []       # prefix is not exact
+    assert catalog.search('file_id:TS000', limit=100, refresh=False)   # but it is contained
+    assert _ids(catalog.search('FILE_ID=ts0010', refresh=False)) == []  # field names are lowercase
+    assert _ids(catalog.search('file_id=ts0010', refresh=False)) == [('TS0010', '110')]  # NOCASE
+
+
+def test_exact_works_on_csv_fields_derived_columns_and_with_quotes(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('TS0010', 'Oil Drum', mode='full')
+    assert _ids(catalog.search('"display_name_en=Oil Drum"', refresh=False)) == [('TS0010', '110')]
+    assert catalog.search('"display_name_en=Oil"', refresh=False) == []
+    assert _ids(catalog.search('full_cn=测试Beta', limit=100, refresh=False))  # source_json field
+
+
+def test_exact_matched_reports_only_the_exact_field(catalog):
+    catalog.import_csv(CSV)
+    hit = catalog.search('file_id=TS0010', refresh=False)[0]
+    assert hit.matched == (('file_id', 'TS0010'),)
+    assert hit.matches('file_id=TS001') == []  # not equal, so not a match
+
+
+def test_exact_value_is_bound_not_interpolated(catalog):
+    catalog.import_csv(CSV)
+    assert catalog.search('file_id=%', refresh=False) == []
+    assert catalog.search("file_id=x' OR '1'='1", refresh=False) == []
+    assert catalog.stats().variants == 8

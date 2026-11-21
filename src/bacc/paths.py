@@ -19,12 +19,14 @@ ENV_DATA_DIR = ('BACC_DATA_DIR', 'BLUEARCHIVECHARACTERSCATALOG_DATA_DIR')
 ENV_DB = ('BACC_DB', 'BLUEARCHIVECHARACTERSCATALOG_DB')
 ENV_TRANSLATIONS = ('BACC_TRANSLATIONS', 'BLUEARCHIVECHARACTERSCATALOG_TRANSLATIONS')
 ENV_SCHOOLS = ('BACC_SCHOOLS', 'BLUEARCHIVECHARACTERSCATALOG_SCHOOLS')
+ENV_NAME_OVERRIDES = ('BACC_NAME_OVERRIDES',)
 ENV_RELEASE_DIR = ('BACC_RELEASE_DIR',)
 
 _APP_NAME = 'BACC'
 _DB_NAME = "ba_characters.db"
 _TRANSLATIONS_NAME = "spine_remark_translate.json"
 _SCHOOLS_NAME = "schools.json"
+_NAME_OVERRIDES_NAME = "name_overrides.json"
 _RELEASE_DIR_NAME = "release"
 
 
@@ -69,3 +71,10 @@ def default_release_dir(base: Path | str | None = None) -> Path:
     """Directory holding the files of the last release zip, verbatim."""
     override = _env(ENV_RELEASE_DIR)
     return Path(override) if override else (Path(base) if base else data_dir()) / _RELEASE_DIR_NAME
+
+
+def default_name_overrides(base: Path | str | None = None) -> Path:
+    """Editable JSON of your own variant names: file ID -> English name."""
+    override = _env(ENV_NAME_OVERRIDES)
+    path = (Path(base) if base else data_dir()) / _NAME_OVERRIDES_NAME
+    return Path(override) if override else path

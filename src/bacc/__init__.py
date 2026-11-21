@@ -44,10 +44,11 @@ from .models import (
     UntranslatedRemark,
     Variant,
 )
-from .naming import make_display
+from .naming import NameOverride, make_display
 from .paths import (
     data_dir,
     default_db,
+    default_name_overrides,
     default_release_dir,
     default_schools,
     default_translations,
@@ -56,9 +57,13 @@ from .queries import find_variants, format_variant, run_search
 from .remote import REPO, Release, ReleaseData, fetch_release_data, latest_release
 from .schools import apply_schools, decode_schools, read_schools
 from .translations import (
+    merged_name_overrides,
     merged_translations,
+    packaged_name_overrides,
     packaged_translations,
+    read_name_overrides,
     read_translations,
+    save_name_overrides,
     save_translations,
     sync_translations,
 )
@@ -77,6 +82,7 @@ __all__ = [
     'BlueArchiveCharacterCatalog',
     'ImportResult',
     'InvalidDataError',
+    'NameOverride',
     'NetworkError',
     'Release',
     'ReleaseData',
@@ -93,6 +99,7 @@ __all__ = [
     'decode_rows',
     'decode_schools',
     'default_db',
+    'default_name_overrides',
     'default_release_dir',
     'default_schools',
     'default_translations',
@@ -104,13 +111,17 @@ __all__ = [
     'latest_release',
     'make_display',
     'mark_checked',
+    'merged_name_overrides',
     'merged_translations',
     'meta',
+    'packaged_name_overrides',
     'packaged_translations',
+    'read_name_overrides',
     'read_schools',
     'read_translations',
     'release_claim',
     'run_search',
+    'save_name_overrides',
     'save_translations',
     'set_meta',
     'should_check',

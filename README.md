@@ -122,6 +122,25 @@ Whitespace separates words and **one field must contain every word** (any order)
 applies inside a field, not across fields. `search('mika swimsuit')` finds rows whose
 display name (or another single field) contains both words, so it narrows `search('mika')`.
 
+A `field:value` token searches that one field only (the value must be contained in it), and
+`field=value` needs the **whole value to equal** it, ignoring case. Both combine with plain words
+(AND):
+
+```python
+catalog.search('file_id:NP0018')                    # contains: any file ID with NP0018 in it
+catalog.search('file_id=NP0018')                    # exactly NP0018
+catalog.search('file_id=NP0018 swimsuit')           # scoped term AND a plain word
+catalog.search('school_name_en:trinity mika')
+catalog.search('"display_name_en=Oil Drum"')        # double quotes keep spaces in one token
+catalog.search('display_name_en:"Oil Drum"')        # same thing
+catalog.search('"Oil Drum"')                        # quoted plain phrase, inside one field
+```
+
+Fields are the CSV columns plus `display_name_en`, `spine_remark_en` and `school_name_en`
+(lowercase). Text before the colon or equals sign that is not a field name (`12:30`) stays an
+ordinary word, and an unbalanced quote is treated as plain text. Apostrophes and backslashes are
+ordinary characters.
+
 ```python
 catalog.search('NP0100')               # a file ID
 catalog.search('圣三一')                # an untranslated Chinese field
@@ -148,6 +167,8 @@ are computed, not stored.
 | `update(force=False)` | Import the upstream release when its content changed; `None` if current |
 | `translate(original, english)` | Save one entry of your own, then refresh the derived names; empty `english` removes it |
 | `sync_translations()` | Recompute names from the glossary in effect |
+| `set_name_override(file_id, name, *, mode='base')` | Save one name override of your own (`'base'` or `'full'`); an empty name removes it |
+| `name_overrides()` | `dict[str, NameOverride]`, the overrides in effect (packaged + yours) |
 | `sync_schools()` | Refresh school names without reimporting the CSV |
 | `clean()` | Empty the imported catalog and freshness records (the JSON files are kept) |
 
@@ -158,6 +179,24 @@ catalog.variants(file_id='NP0041')[0].display_name_en   # 'Mika (Battered)'
 from pathlib import Path
 catalog.import_csv(Path('students_data.csv').read_bytes())
 ```
+
+**Name overrides.** When upstream has no English name (a variant still shows `NP0121`), give the
+file ID one, the same way as the remark glossary: a packaged `name_overrides.json` is the base,
+your own file of the same name in the data directory overrides it, and importing never writes that
+file. The key is the file ID, and the override applies to every row that carries it.
+`mode='base'` (the default) replaces only the base name, so labels are still appended
+(`Name (Swimsuit)`); `mode='full'` replaces the whole `display_name_en`:
+
+```python
+catalog.set_name_override('NP0121', 'Some Name')                 # 'Some Name (Swimsuit)'
+catalog.set_name_override('NP0018', 'Oil Drum', mode='full')     # exactly 'Oil Drum'
+catalog.set_name_override('NP0121', '')                          # remove yours; packaged applies
+catalog.name_overrides()          # dict[str, NameOverride], packaged + yours
+```
+
+CLI: `bacc name-override NP0121 "Some Name" [--mode full]`. In the JSON, a plain string is base
+mode and `{"name": "Oil Drum", "mode": "full"}` is full mode. The original value stays in
+`Variant.source`. The package ships three entries (`NP0018`, `NP0081`, `NP0082`).
 
 `import_csv` takes bytes, not a path: the CLI reads the file, and callers that already have
 a download, an HTTP body or an archive entry pass it straight through. Everything is
@@ -237,9 +276,9 @@ for variant in find_variants(con, 'mika', limit=5):
 
 The data directory is `data_dir=` > `$BACC_DATA_DIR` >
 `platformdirs.user_data_dir("BACC")`; it holds `ba_characters.db`, `schools.json`,
-`spine_remark_translate.json` and the `release/` folder. Each can be moved on its own with
-`db_path=`, `translations_path=`, `schools_path=`, `release_dir=` or `BACC_DB`,
-`BACC_TRANSLATIONS`, `BACC_SCHOOLS`, `BACC_RELEASE_DIR`
+`spine_remark_translate.json`, `name_overrides.json` and the `release/` folder. Each can be moved on its own with
+`db_path=`, `translations_path=`, `schools_path=`, `name_overrides_path=`, `release_dir=` or `BACC_DB`,
+`BACC_TRANSLATIONS`, `BACC_SCHOOLS`, `BACC_NAME_OVERRIDES`, `BACC_RELEASE_DIR`
 (explicit argument > environment variable > file inside the data directory).
 **Glossary:** the translations packaged with the library
 (`src/bacc/spine_remark_translate.json`) are the base and are never copied out. Your own

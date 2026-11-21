@@ -5,13 +5,20 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 
-from .models import Variant
+from .models import Variant, parse_query
 
 # AND applies inside one field, never across fields: a row matches when a single
 # field contains every word. The CSV fields are searched through json_each, so
 # only their values count: a word like "en" or "kivo" must not match the JSON keys
 # and so every row.
 _COLUMNS = ('display_name_en', 'spine_remark_en', 'school_name_en')
+# Variant columns a ``field:value`` token can hit directly; other CSV fields are read
+# from source_json. The names come from a fixed set, never from user text.
+_VARIANT_COLUMNS = frozenset({
+    'file_id', 'student_id', 'spine_id', 'page_id', 'given_en', 'full_en', 'skin_en',
+    'spine_remark', 'spine_remark_en', 'display_name_en', 'school_id', 'school_name',
+    'school_name_en',
+})
 
 
 _ORDER_SQL = r"""
@@ -32,29 +39,48 @@ def find_variants(con: sqlite3.Connection, query: str, limit: int = 30) -> list[
     """Match variants across the translated columns and every original CSV field.
 
     Whitespace separates words; one field must contain all of them (AND within a
-    field, not across fields).
+    field, not across fields). A ``field:value`` token (``file_id:NP0018``) must
+    instead contain its value in that field, ``field=value`` must equal it
+    (case-insensitively), and both combine with plain words. Double quotes keep
+    spaces: ``"display_name_en=Oil Drum"``.
     Results are ordered best match first, judged on the whole query: exact given
     name, exact display name, given-name prefix, then everything else.
     """
-    words = query.split()
-    if not words:
+    words, scoped = parse_query(query)
+    if not words and not scoped:
         return []
-    whole = ' '.join(words)
-    # Only placeholders vary with the word count; the text itself is always bound.
-    patterns = ['%' + _escape(word) + '%' for word in words]
-    like = r"{} LIKE ? ESCAPE '\'"
-    clauses = [' AND '.join([like.format(col)] * len(words)) for col in _COLUMNS]
-    clauses.append(
-        'EXISTS (SELECT 1 FROM json_each(v.source_json) j WHERE '
-        + ' AND '.join([like.format('j.value')] * len(words))
-        + ')'
-    )
-    where = ' OR '.join(f'({clause})' for clause in clauses)
-    params: list[str | int] = patterns * len(clauses)
+    whole = ' '.join(words or [term.value for term in scoped])
+    # Only placeholders vary with the query shape; the text itself is always bound.
+    conditions: list[str] = []
+    params: list[str | int] = []
+    if words:
+        patterns = ['%' + _escape(word) + '%' for word in words]
+        like = r"{} LIKE ? ESCAPE '\'"
+        clauses = [' AND '.join([like.format(col)] * len(words)) for col in _COLUMNS]
+        clauses.append(
+            'EXISTS (SELECT 1 FROM json_each(v.source_json) j WHERE '
+            + ' AND '.join([like.format('j.value')] * len(words))
+            + ')'
+        )
+        conditions.append(' OR '.join(f'({clause})' for clause in clauses))
+        params.extend(patterns * len(clauses))
+    for name, value, exact in scoped:
+        if name in _VARIANT_COLUMNS:
+            target = f'v.{name}'
+        else:
+            target = 'json_extract(v.source_json, ?)'
+            params.append(f'$.{name}')
+        if exact:
+            conditions.append(f'{target} = ? COLLATE NOCASE')
+            params.append(value)
+        else:
+            conditions.append(rf"{target} LIKE ? ESCAPE '\'")
+            params.append('%' + _escape(value) + '%')
+    where = ' AND '.join(f'({c})' for c in conditions)
     params.extend([whole, whole, _escape(whole) + '%', limit])
     rows = con.execute(f'SELECT v.* FROM variants v WHERE {where}{_ORDER_SQL}', params)
     results = (Variant.from_row(row) for row in rows)
-    return [replace(v, matched=tuple(v.matches(whole))) for v in results]
+    return [replace(v, matched=tuple(v.matches(query))) for v in results]
 
 
 def format_variant(variant: Variant, query: str) -> str:

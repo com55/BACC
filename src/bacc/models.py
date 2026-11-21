@@ -3,8 +3,61 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import sqlite3
 from dataclasses import dataclass, field
+from typing import NamedTuple
+
+from .importer import FIELDS
+
+# Names accepted before the ``:`` or ``=`` in ``field:value`` searches: every CSV
+# field plus the three columns derived by the catalog.
+SEARCH_FIELDS = frozenset(FIELDS) | {'display_name_en', 'spine_remark_en', 'school_name_en'}
+
+
+class ScopedTerm(NamedTuple):
+    """One ``field:value`` (contains) or ``field=value`` (exactly equals) token."""
+
+    field: str
+    value: str
+    exact: bool = False
+
+
+def _tokens(query: str) -> list[str]:
+    """Whitespace-separated tokens; double quotes keep spaces inside one token.
+
+    ``"display_name_en:Oil Drum"`` and ``display_name_en:"Oil Drum"`` are both one
+    token. Backslashes and apostrophes are ordinary characters, and an unbalanced
+    quote falls back to plain whitespace splitting.
+    """
+    lexer = shlex.shlex(query, posix=True)
+    lexer.whitespace_split = True
+    lexer.quotes = '"'
+    lexer.escape = ''
+    lexer.commenters = ''
+    try:
+        return list(lexer)
+    except ValueError:
+        return query.split()
+
+
+def parse_query(query: str) -> tuple[list[str], list[ScopedTerm]]:
+    """Split a query into plain words and field-scoped terms.
+
+    A token only counts as scoped when the text before the first ``:`` or ``=``
+    names a known field and a value follows, so ``12:30`` or ``http://x`` stay
+    ordinary words. A quoted token with spaces is one word (a phrase).
+    """
+    words: list[str] = []
+    scoped: list[ScopedTerm] = []
+    for token in _tokens(query):
+        match = re.fullmatch(r'([a-z_]+)([:=])(.+)', token, re.DOTALL)
+        if match and match.group(1) in SEARCH_FIELDS:
+            scoped.append(ScopedTerm(match.group(1), match.group(3), match.group(2) == '='))
+        elif token:
+            words.append(token)
+    return words, scoped
 
 
 @dataclass(frozen=True)
@@ -42,19 +95,31 @@ class Variant:
         return self.school_name_en or self.school_name
 
     def matches(self, query: str) -> list[tuple[str, str]]:
-        """Explain a hit: the fields and values that contain every word of ``query``."""
-        needles = query.casefold().split()
+        """Explain a hit: the fields and values behind it.
+
+        Plain words must all sit in one field; each ``field:value`` (contains) or
+        ``field=value`` (equals) token names its own field.
+        """
+        words, scoped = parse_query(query)
+        needles = [word.casefold() for word in words]
         fields: dict[str, str] = {
             **self.source,
+            'given_en': self.given_en,
             'spine_remark_en': self.spine_remark_en,
             'display_name_en': self.display_name_en,
             'school_name_en': self.school_name_en,
         }
-        return [
+        found = [
             (name, str(value))
             for name, value in fields.items()
-            if value and all(needle in str(value).casefold() for needle in needles)
+            if needles and value and all(needle in str(value).casefold() for needle in needles)
         ]
+        for name, needle, exact in scoped:
+            value = str(fields.get(name, ''))
+            text, wanted = value.casefold(), needle.casefold()
+            if value and (text == wanted if exact else wanted in text) and (name, value) not in found:
+                found.append((name, value))
+        return found
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Variant:

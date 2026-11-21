@@ -74,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
         help='Schools JSON path (default: inside the data dir)',
     )
     p.add_argument(
+        '--name-overrides', type=Path, default=None,
+        help='Name overrides JSON path (default: inside the data dir)',
+    )
+    p.add_argument(
         '--release-dir', type=Path, default=None,
         help='Where the release zip files are kept (default: inside the data dir)',
     )
@@ -111,6 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
     trans = sub.add_parser('translate', help='Add/update English translation for a remark')
     trans.add_argument('original')
     trans.add_argument('english')
+    override = sub.add_parser(
+        'name-override', help='Add/update your own name for a file ID (empty name removes it)'
+    )
+    override.add_argument('file_id', help='file ID such as NP0121')
+    override.add_argument('name')
+    override.add_argument(
+        '--mode', choices=['base', 'full'], default='base',
+        help='base: replace the base name, labels stay; full: replace the whole display name',
+    )
     return p
 
 
@@ -158,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=args.db,
             translations_path=args.translations,
             schools_path=args.schools,
+            name_overrides_path=args.name_overrides,
             release_dir=args.release_dir,
             proxy=args.proxy,
         ) as cat:
@@ -181,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(render_search(results, args.query, limit))
             elif args.command == 'translate':
                 set_translation(cat, args.original, args.english)
+            elif args.command == 'name-override':
+                count = cat.set_name_override(args.file_id, args.name, mode=args.mode)
+                print(f'{args.file_id} -> {args.name!r} ({args.mode}); synced {count} rows')
             elif args.command == 'sync':
                 print(
                     f'Synced {cat.sync_translations()} records from '

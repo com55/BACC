@@ -30,9 +30,15 @@ from .db import (
 from .errors import InvalidDataError, NetworkError
 from .importer import decode_rows
 from .models import ImportResult, School, Stats, Student, UntranslatedRemark, Variant
-from .naming import make_display
+from .naming import MODES, NameOverride, make_display
 from .paths import data_dir as default_data_dir
-from .paths import default_db, default_release_dir, default_schools, default_translations
+from .paths import (
+    default_db,
+    default_name_overrides,
+    default_release_dir,
+    default_schools,
+    default_translations,
+)
 from .queries import find_variants
 from .remote import (
     download_schools,
@@ -43,8 +49,11 @@ from .remote import (
 )
 from .schools import apply_schools, read_schools
 from .translations import (
+    merged_name_overrides,
     merged_translations,
+    read_name_overrides,
     read_translations,
+    save_name_overrides,
     save_translations,
     sync_translations,
 )
@@ -67,6 +76,7 @@ def _prepare(
     blob: bytes,
     translations: dict[str, str],
     official_schools: dict[str, dict[str, str]],
+    overrides: dict[str, NameOverride],
 ) -> _Snapshot:
     """Build every row up front, so validation failures never reach the database."""
     rows = decode_rows(blob)
@@ -93,14 +103,15 @@ def _prepare(
             sid, (sid, row['given_en'], row['full_en'], school_id or None)
         )
         remark = row['spine_remark']
+        override = overrides.get(row['file_id'])
         english = translations.get(remark, '') if remark else ''
         if remark and not english:
             missing[remark] += 1
         variant_rows.append(
             (
                 index, row['file_id'], sid, row['spine_id'], row['page_id'],
-                row['given_en'], row['full_en'], row['skin_en'], remark, english,
-                make_display(row, english), school_id, row['school_name'],
+                (override.name if override else '') or row['given_en'], row['full_en'], row['skin_en'], remark, english,
+                make_display(row, english, override), school_id, row['school_name'],
                 official_schools.get(school_id, {}).get('name_en', ''),
                 json.dumps(row, ensure_ascii=False, separators=(',', ':')),
             )
@@ -121,9 +132,9 @@ class BlueArchiveCharacterCatalog:
         data_dir: Directory for the database and the two JSON files. Defaults to
             ``$BACC_DATA_DIR`` or ``platformdirs.user_data_dir("BACC")``, so the
             catalog does not depend on the current working directory.
-        db_path, translations_path, schools_path, release_dir: Per-file overrides.
+        db_path, translations_path, schools_path, name_overrides_path, release_dir: Per-file overrides.
             Each defaults to its environment variable (``BACC_DB``,
-            ``BACC_TRANSLATIONS``, ``BACC_SCHOOLS``, ``BACC_RELEASE_DIR``) and then
+            ``BACC_TRANSLATIONS``, ``BACC_SCHOOLS``, ``BACC_NAME_OVERRIDES``, ``BACC_RELEASE_DIR``) and then
             to a file inside ``data_dir``. ``release_dir`` keeps every file of the
             last release zip, including ``LICENSE-DATA.txt``. Use
             ``db_path`` to keep the database off a network filesystem, where
@@ -149,6 +160,7 @@ class BlueArchiveCharacterCatalog:
         db_path: str | Path | None = None,
         translations_path: str | Path | None = None,
         schools_path: str | Path | None = None,
+        name_overrides_path: str | Path | None = None,
         release_dir: str | Path | None = None,
         proxy: str | None = None,
         auto_update: bool = True,
@@ -165,6 +177,11 @@ class BlueArchiveCharacterCatalog:
         )
         self.schools_path = (
             Path(schools_path) if schools_path is not None else default_schools(self.data_dir)
+        )
+        self.name_overrides_path = (
+            Path(name_overrides_path)
+            if name_overrides_path is not None
+            else default_name_overrides(self.data_dir)
         )
         self.release_dir = (
             Path(release_dir) if release_dir is not None else default_release_dir(self.data_dir)
@@ -343,7 +360,12 @@ class BlueArchiveCharacterCatalog:
     ) -> ImportResult:
         with self._files_lock:
             translations = merged_translations(self.translations_path)
-            snapshot = _prepare(blob, translations, read_schools(self.schools_path))
+            snapshot = _prepare(
+                blob,
+                translations,
+                read_schools(self.schools_path),
+                merged_name_overrides(self.name_overrides_path),
+            )
             with con:
                 con.execute('DELETE FROM variants')
                 con.execute('DELETE FROM students')
@@ -427,7 +449,7 @@ class BlueArchiveCharacterCatalog:
                 logger.warning('Could not save the release files to %s (%s)', self.release_dir, exc)
         if unchanged:
             apply_schools(con, read_schools(self.schools_path))
-            sync_translations(con, merged_translations(self.translations_path))
+            self._sync(con)
             mark_checked(con)
             return None
         result = self._import_csv(
@@ -519,11 +541,46 @@ class BlueArchiveCharacterCatalog:
             else:
                 mine.pop(original, None)  # no entry of your own: the packaged one applies
             save_translations(self.translations_path, mine)
-            return sync_translations(self.connection, merged_translations(self.translations_path))
+            return self._sync(self.connection)
 
     def sync_translations(self) -> int:
-        """Recompute English remarks and display names from the glossary file."""
-        return sync_translations(self.connection, merged_translations(self.translations_path))
+        """Recompute English remarks and display names from the glossary and name files."""
+        return self._sync(self.connection)
+
+    def _sync(self, con: sqlite3.Connection) -> int:
+        return sync_translations(
+            con,
+            merged_translations(self.translations_path),
+            merged_name_overrides(self.name_overrides_path),
+        )
+
+    def name_overrides(self) -> dict[str, NameOverride]:
+        """The overrides in effect: the packaged ones overridden by your data-directory file."""
+        return merged_name_overrides(self.name_overrides_path)
+
+    def set_name_override(self, file_id: str, name: str, *, mode: str = 'base') -> int:
+        """Record one name override and refresh the derived names.
+
+        ``file_id`` is a file ID such as ``NP0121``; it applies to every variant
+        row that carries it. ``mode='base'`` replaces only the base name, so labels
+        are still appended (``Name (Swimsuit)``); ``mode='full'`` replaces the whole
+        display name. The entry goes into your own file in the data directory
+        (created on the first call), so it survives updates and wins over the
+        packaged one. An empty ``name`` removes your entry.
+        """
+        file_id = file_id.strip()
+        if not file_id:
+            raise ValueError('File ID must not be empty')
+        if mode not in MODES:
+            raise ValueError(f'mode must be one of {MODES}, not {mode!r}')
+        with self._files_lock:
+            mine = read_name_overrides(self.name_overrides_path)
+            if name.strip():
+                mine[file_id] = NameOverride(name.strip(), mode)
+            else:
+                mine.pop(file_id, None)  # no entry of your own: the packaged one applies
+            save_name_overrides(self.name_overrides_path, mine)
+            return self._sync(self.connection)
 
     def sync_schools(self) -> int:
         """Refresh school names from schools.json without reimporting the CSV."""

@@ -183,6 +183,7 @@ class Stats:
     untranslated_rows: int
     upstream_date: str = ''
     data_commit: str = ''
+    revision: str = ''
 
 
 @dataclass(frozen=True)

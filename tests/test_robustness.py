@@ -16,6 +16,7 @@ from bacc import (
     BlueArchiveCharacterCatalog,
     InvalidDataError,
     NetworkError,
+    Revision,
     connect,
     meta,
     read_translations,
@@ -773,3 +774,89 @@ def test_exact_value_is_bound_not_interpolated(catalog):
     assert catalog.search('file_id=%', refresh=False) == []
     assert catalog.search("file_id=x' OR '1'='1", refresh=False) == []
     assert catalog.stats().variants == 8
+
+
+# --- revision -----------------------------------------------------------------
+
+
+def test_revision_token_roundtrip_and_validation():
+    rev = Revision('20261122T120000Z', '0123456789abcdef')
+    assert str(rev) == '20261122T120000Z-0123456789abcdef'
+    assert Revision.parse(str(rev)) == rev
+    for bad in ('', 'abc', '20261122T120000Z-xyz', '20261122T120000Z-0123456789abcde'):
+        with pytest.raises(ValueError):
+            Revision.parse(bad)
+
+
+def test_revision_is_stable_until_the_content_changes(catalog):
+    catalog.import_csv(CSV)
+    first = catalog.revision()
+    assert catalog.revision() == first and catalog.is_current(first)
+    assert catalog.is_current(str(first))
+    assert catalog.stats().revision == str(first)
+
+    catalog.import_csv(CSV)  # identical content again: same digest and the same timestamp
+    assert catalog.revision() == first
+
+    catalog.translate('战损', 'Mine')
+    changed = catalog.revision()
+    assert changed.digest != first.digest and not catalog.is_current(first)
+    assert catalog.is_current(changed)
+
+
+@pytest.mark.parametrize('edit', [
+    lambda c: c.set_name_override('TS0010', 'Mine'),
+    lambda c: c.translate('泳装', 'Beach'),
+    lambda c: c.clean(),
+])
+def test_revision_follows_each_kind_of_write(catalog, edit):
+    catalog.import_csv(CSV)
+    before = catalog.revision()
+    edit(catalog)
+    assert not catalog.is_current(before)
+
+
+def test_schools_update_moves_the_revision(catalog):
+    catalog.import_csv(CSV)
+    before = catalog.revision()
+    catalog.schools_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog.schools_path.write_bytes(SCHOOLS)
+    catalog.sync_schools()
+    assert not catalog.is_current(before)
+
+
+def test_repeating_an_edit_or_a_noop_sync_keeps_the_revision(catalog):
+    catalog.import_csv(CSV)
+    catalog.translate('战损', 'Mine')
+    rev = catalog.revision()
+    catalog.translate('战损', 'Mine')
+    catalog.sync_translations()
+    assert catalog.revision() == rev
+
+
+def test_revision_returns_to_the_same_digest_when_an_edit_is_undone(catalog):
+    catalog.import_csv(CSV)
+    base = catalog.revision()
+    catalog.set_name_override('TS0010', 'Mine')
+    catalog.set_name_override('TS0010', '')
+    assert catalog.is_current(base)
+
+
+def test_old_database_without_revision_rows_gets_one(catalog):
+    catalog.import_csv(CSV)
+    with catalog.connection:
+        catalog.connection.execute("DELETE FROM metadata WHERE key LIKE 'revision_%'")
+    rev = catalog.revision()
+    assert len(rev.digest) == 16 and catalog.is_current(rev)
+
+
+def test_a_rebuilt_database_with_the_same_content_is_current(tmp_path):
+    first = BlueArchiveCharacterCatalog(db_path=tmp_path / 'a.db')
+    second = BlueArchiveCharacterCatalog(db_path=tmp_path / 'b.db')
+    try:
+        first.import_csv(CSV)
+        second.import_csv(CSV)
+        assert second.is_current(first.revision())
+    finally:
+        first.close()
+        second.close()

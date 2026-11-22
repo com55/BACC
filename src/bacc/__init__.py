@@ -55,6 +55,7 @@ from .paths import (
 )
 from .queries import find_variants, format_variant, run_search
 from .remote import REPO, Release, ReleaseData, fetch_release_data, latest_release
+from .revision import Revision
 from .schools import apply_schools, decode_schools, read_schools
 from .translations import (
     merged_name_overrides,
@@ -86,6 +87,7 @@ __all__ = [
     'NetworkError',
     'Release',
     'ReleaseData',
+    'Revision',
     'School',
     'Stats',
     'Student',

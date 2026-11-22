@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .errors import InvalidDataError
 from .paths import default_schools
+from .revision import refresh_revision
 
 logger = logging.getLogger(__name__)
 
@@ -64,4 +65,5 @@ def apply_schools(con: sqlite3.Connection, schools: dict[str, dict[str, str]]) -
             '''UPDATE variants SET school_name_en = COALESCE(
                 (SELECT school_name_en FROM schools WHERE schools.school_id=variants.school_id), '')'''
         )
+        refresh_revision(con)
     return len(schools)

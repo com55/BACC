@@ -47,6 +47,7 @@ from .remote import (
     save_release_files,
     save_schools,
 )
+from .revision import Revision, read_revision, refresh_revision
 from .schools import apply_schools, read_schools
 from .translations import (
     merged_name_overrides,
@@ -329,7 +330,30 @@ class BlueArchiveCharacterCatalog:
             ).fetchone()[0],
             upstream_date=meta(con, 'upstream_date'),
             data_commit=meta(con, 'upstream_data_commit'),
+            revision=str(read_revision(con)),
         )
+
+    def revision(self) -> Revision:
+        """When the catalog content last changed, plus a digest of that content.
+
+        Keep ``str(revision)`` next to what you read; later, :meth:`is_current` tells
+        whether the catalog still holds exactly that content. It changes on an import
+        that brings new data, on ``translate``, ``set_name_override`` and the sync
+        methods when they alter a row, and on ``clean``; checking for updates without
+        news does not touch it.
+        """
+        return read_revision(self.connection)
+
+    def is_current(self, revision: Revision | str) -> bool:
+        """``True`` when the catalog content still matches ``revision``.
+
+        Accepts a :class:`Revision` or its string token. Only the content digest is
+        compared, so a database rebuilt with identical content is still current.
+        Raises :class:`ValueError` for a malformed token.
+        """
+        if isinstance(revision, str):
+            revision = Revision.parse(revision)
+        return self.revision().digest == revision.digest
 
     def translations(self) -> dict[str, str]:
         """The glossary in effect: the packaged one overridden by your data-directory file."""
@@ -399,6 +423,7 @@ class BlueArchiveCharacterCatalog:
                         **(extra or {}),
                     },
                 )
+                refresh_revision(con)
         return ImportResult(
             rows=len(snapshot.variants),
             students=len(snapshot.students),
@@ -469,6 +494,7 @@ class BlueArchiveCharacterCatalog:
         with con:
             for table in ('variants', 'students', 'schools', 'metadata'):
                 con.execute(f'DELETE FROM {table}')
+            refresh_revision(con)
 
     def _refresh_in_background(self) -> None:
         """Start :meth:`_refresh_if_due` on a daemon thread unless one is already running."""

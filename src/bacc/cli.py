@@ -33,6 +33,7 @@ def _print_stats(catalog: BlueArchiveCharacterCatalog) -> None:
     for table in ('students', 'variants', 'schools'):
         print(f'{table}: {getattr(stats, table)}')
     print('Untranslated rows:', stats.untranslated_rows)
+    print('Revision:', stats.revision)
 
 
 def _print_untranslated(catalog: BlueArchiveCharacterCatalog, limit: int) -> None:

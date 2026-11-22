@@ -117,6 +117,8 @@ with BlueArchiveCharacterCatalog() as catalog:   # or call catalog.close()
 | `untranslated(limit=100)` | `list[UntranslatedRemark]`, most used first |
 | `stats()` | `Stats` |
 | `translations()` | `dict[str, str]`, the glossary in effect (packaged + yours) |
+| `revision()` | `Revision`, when the content last changed plus a digest of it |
+| `is_current(revision)` | `bool`, whether the catalog still holds exactly that content |
 
 Whitespace separates words and **one field must contain every word** (any order): AND
 applies inside a field, not across fields. `search('mika swimsuit')` finds rows whose
@@ -202,6 +204,25 @@ mode and `{"name": "Oil Drum", "mode": "full"}` is full mode. The original value
 a download, an HTTP body or an archive entry pass it straight through. Everything is
 validated before the first write and the snapshot swap is one transaction, so a bad input
 leaves the previous catalog intact.
+
+### Revision
+
+A client that keeps what it read can ask later whether it is still current, without comparing
+rows:
+
+```python
+rev = catalog.revision()       # Revision(changed_at='20261122T120000Z', digest='1a2b3c4d5e6f7a8b')
+token = str(rev)               # '20261122T120000Z-1a2b3c4d5e6f7a8b': store it next to your data
+...
+catalog.is_current(token)      # False once the content has changed (a Revision works too)
+```
+
+The digest covers every row a query can return (variants, students, schools). It moves with an
+import that brings new data, `translate`, `set_name_override`, `sync_*` and `clean` when they
+change a row, and stays put when an update finds nothing new or an edit is repeated or undone.
+`changed_at` is informational: only the digest is compared, so a database rebuilt with identical
+content is still current. `stats().revision` and `bacc stats` show the token. The revision is
+refreshed in the same transaction as the write, so a reader never sees new data under an old one.
 
 ### Freshness
 

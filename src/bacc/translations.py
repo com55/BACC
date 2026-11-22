@@ -10,6 +10,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from .naming import MODES, NameOverride, make_display
+from .revision import refresh_revision
 
 PACKAGED_GLOSSARY = 'spine_remark_translate.json'
 PACKAGED_NAME_OVERRIDES = 'name_overrides.json'
@@ -154,4 +155,5 @@ def sync_translations(
             'UPDATE variants SET spine_remark_en=?, display_name_en=?, given_en=? WHERE id=?',
             updates,
         )
+        refresh_revision(con)
     return len(updates)

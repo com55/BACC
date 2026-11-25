@@ -185,7 +185,11 @@ catalog.import_csv(Path('students_data.csv').read_bytes())
 **Name overrides.** When upstream has no English name (a variant still shows `NP0121`), give the
 file ID one, the same way as the remark glossary: a packaged `name_overrides.json` is the base,
 your own file of the same name in the data directory overrides it, and importing never writes that
-file. The key is the file ID, and the override applies to every row that carries it.
+file. The key is the file ID (case does not matter), and the override applies to every row that
+carries it. A file ID the release does not have yet gets a row of its own with just that name, so
+`search()` and `variants()` find it; its other fields, `student_id` included, are empty. It counts
+in `stats().variants` but not as a student, and gives way to the real rows, still renamed, once the
+release ships the ID. Check the spelling: a mistyped ID adds a row too.
 `mode='base'` (the default) replaces only the base name, so labels are still appended
 (`Name (Swimsuit)`); `mode='full'` replaces the whole `display_name_en`:
 
@@ -198,7 +202,8 @@ catalog.name_overrides()          # dict[str, NameOverride], packaged + yours
 
 CLI: `bacc name-override NP0121 "Some Name" [--mode full]`. In the JSON, a plain string is base
 mode and `{"name": "Oil Drum", "mode": "full"}` is full mode. The original value stays in
-`Variant.source`. The package ships three entries (`NP0018`, `NP0081`, `NP0082`).
+`Variant.source`. The entries the package ships are in
+`src/bacc/name_overrides.json`.
 
 `import_csv` takes bytes, not a path: the CLI reads the file, and callers that already have
 a download, an HTTP body or an archive entry pass it straight through. Everything is

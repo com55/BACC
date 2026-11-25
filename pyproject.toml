@@ -1,6 +1,6 @@
 [project]
 name = "bacc"
-version = "0.6.0"
+version = "0.7.0"
 description = "Import the BA-characters-internal-id release CSV into a searchable SQLite catalog"
 readme = "README.md"
 authors = [

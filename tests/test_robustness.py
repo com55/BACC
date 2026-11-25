@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from factory import CSV, SCHOOLS, VARIANTS
+from factory import CSV, ROWS, SCHOOLS, VARIANTS, build_csv, make_row
 
 import bacc.app as app_module
 from bacc import (
@@ -608,7 +608,7 @@ def test_override_survives_reimport_and_removal_restores_the_source(catalog):
     assert _display(catalog, 'TS0010') == [('110', 'Mine')]
     catalog.set_name_override('TS0010', '')
     assert _display(catalog, 'TS0010') == [('110', 'Beta')]
-    assert catalog.name_overrides() == packaged_name_overrides()
+    assert catalog.name_overrides() == {}
 
 
 def test_overrides_leave_other_file_ids_alone(catalog):
@@ -652,11 +652,16 @@ def test_empty_user_name_does_not_blank_a_packaged_one(catalog, monkeypatch):
     assert dict(_display(catalog, 'TS0010')) == {'110': 'Packaged B'}
 
 
-def test_the_shipped_overrides_are_the_three_agreed_entries():
+def test_the_shipped_overrides_are_the_agreed_entries():
     assert packaged_name_overrides() == {
         'NP0018': NameOverride('Oil Drum', 'full'),
         'NP0081': NameOverride('Asuna (School)', 'full'),
         'NP0082': NameOverride('Karin (School)', 'full'),
+        'CH0038': NameOverride('Hatsuda'),
+        'CH0315': NameOverride('Sayo'),
+        'CH0339': NameOverride('Manami'),
+        'CH0340': NameOverride('Urara'),
+        'CH0341': NameOverride('Kanon'),
     }
 
 
@@ -860,3 +865,77 @@ def test_a_rebuilt_database_with_the_same_content_is_current(tmp_path):
     finally:
         first.close()
         second.close()
+
+
+# --- overrides for file IDs the release does not have yet ----------------------
+
+
+def _names(catalog, file_id):
+    return [v.display_name_en for v in catalog.variants(file_id=file_id)]
+
+
+def test_unknown_file_id_gets_its_own_row(catalog):
+    catalog.import_csv(CSV)
+    before, students = catalog.stats(), catalog.students()
+    catalog.set_name_override('XX0001', 'Added')
+    assert _names(catalog, 'xx0001') == ['Added']
+    for query in ('XX0001', 'file_id="xx0001"', 'added'):
+        assert [v.file_id for v in catalog.search(query, refresh=False)] == ['XX0001']
+    assert catalog.stats().variants == before.variants + 1
+    assert catalog.stats().students == before.students
+    assert catalog.students() == students
+
+
+def test_extra_row_follows_the_override_and_the_revision(catalog):
+    catalog.import_csv(CSV)
+    start = catalog.revision()
+    catalog.set_name_override('XX0001', 'Added')
+    added = catalog.revision()
+    assert not catalog.is_current(start)
+    catalog.sync_translations()
+    assert catalog.is_current(added)  # rebuilding the same rows is not a change
+    catalog.set_name_override('XX0001', 'Renamed')
+    assert _names(catalog, 'XX0001') == ['Renamed']
+    assert not catalog.is_current(added)
+    catalog.set_name_override('XX0001', '')
+    assert _names(catalog, 'XX0001') == []
+    assert catalog.is_current(start)
+
+
+def test_extra_row_survives_reimport_and_yields_to_upstream(catalog):
+    catalog.set_name_override('ts0099', 'Added')
+    catalog.import_csv(CSV, tag='again')
+    assert _names(catalog, 'TS0099') == ['Added']
+    newer = build_csv([*ROWS, make_row('TS0099', 4, 130, 'Delta', 'Testd', skin='Swimsuit')])
+    catalog.import_csv(newer, tag='newer')
+    # Only the real row is left, and the override (typed in another case) renames it.
+    assert _names(catalog, 'TS0099') == ['Added (Swimsuit)']
+    assert catalog.stats().variants == VARIANTS + 1
+
+
+def test_override_case_does_not_matter(catalog):
+    catalog.import_csv(CSV)
+    catalog.set_name_override('ts0010', 'Lower')
+    assert _names(catalog, 'TS0010') == ['Lower']
+    catalog.set_name_override('TS0010', 'Upper')
+    assert catalog.name_overrides() == {'TS0010': NameOverride('Upper')}
+    catalog.set_name_override('Ts0010', '')
+    assert catalog.name_overrides() == {}
+    assert _names(catalog, 'TS0010') == ['Beta']
+
+
+def test_your_entry_wins_over_a_packaged_one_in_another_case(catalog, monkeypatch):
+    monkeypatch.setattr(translations_module, 'packaged_name_overrides',
+                        lambda: {'XX0001': NameOverride('Packaged')})
+    catalog.import_csv(CSV)
+    catalog.set_name_override('xx0001', 'Mine')
+    assert catalog.name_overrides() == {'xx0001': NameOverride('Mine')}
+    assert _names(catalog, 'XX0001') == ['Mine']
+
+
+def test_no_extra_rows_before_the_first_import(tmp_path):
+    with BlueArchiveCharacterCatalog(tmp_path, auto_update=False) as cat:
+        cat.set_name_override('XX0001', 'Added')
+        assert cat.stats().variants == 0
+        cat.import_csv(CSV)
+        assert _names(cat, 'XX0001') == ['Added']

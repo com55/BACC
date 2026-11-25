@@ -9,6 +9,7 @@ import tempfile
 from importlib.resources import files
 from pathlib import Path
 
+from .importer import FIELDS
 from .naming import MODES, NameOverride, make_display
 from .revision import refresh_revision
 
@@ -116,9 +117,23 @@ def read_name_overrides(path: Path) -> dict[str, NameOverride]:
 
 
 def merged_name_overrides(path: Path) -> dict[str, NameOverride]:
-    """The overrides in effect: the packaged ones, overridden by your non-empty entries."""
-    mine = {key: entry for key, entry in read_name_overrides(path).items() if entry.name}
-    return {**packaged_name_overrides(), **mine}
+    """The overrides in effect: the packaged ones, overridden by your non-empty entries.
+
+    File IDs match regardless of case, so yours replaces a packaged one spelled differently.
+    """
+    mine = read_name_overrides(path)
+    effective = {
+        key.casefold(): (key, entry)
+        for source in (packaged_name_overrides(), mine)
+        for key, entry in source.items()
+        if entry.name
+    }
+    return dict(effective.values())
+
+
+def by_folded_id(overrides: dict[str, NameOverride]) -> dict[str, NameOverride]:
+    """The same overrides keyed for case-insensitive lookup."""
+    return {file_id.casefold(): entry for file_id, entry in overrides.items()}
 
 
 def save_name_overrides(path: Path, overrides: dict[str, NameOverride]) -> None:
@@ -132,6 +147,41 @@ def save_name_overrides(path: Path, overrides: dict[str, NameOverride]) -> None:
     )
 
 
+def sync_extra_variants(con: sqlite3.Connection, overrides: dict[str, NameOverride]) -> None:
+    """Give every override whose file ID the release lacks a row of its own.
+
+    Runs in the caller's transaction and rebuilds the rows from scratch, so they follow
+    the overrides and disappear once the release ships the file ID. They are marked by
+    an empty ``student_id``, which imported rows can never have. Nothing is added to a
+    catalog that holds no imported rows.
+    """
+    con.execute("DELETE FROM variants WHERE student_id=''")
+    con.execute("DELETE FROM students WHERE student_id=''")
+    known = {r['file_id'].casefold() for r in con.execute('SELECT file_id FROM variants')}
+    if not known:
+        return
+    extra = sorted(
+        (file_id, entry.name)
+        for file_id, entry in overrides.items()
+        if entry.name and file_id.casefold() not in known
+    )
+    if not extra:
+        return
+    con.execute("INSERT INTO students(student_id) VALUES ('')")
+    con.executemany(
+        'INSERT INTO variants(file_id, student_id, given_en, display_name_en, source_json)'
+        " VALUES (?, '', ?, ?, ?)",
+        [
+            (
+                file_id, name, name,
+                json.dumps({**dict.fromkeys(FIELDS, ''), 'file_id': file_id},
+                           separators=(',', ':')),
+            )
+            for file_id, name in extra
+        ],
+    )
+
+
 def sync_translations(
     con: sqlite3.Connection,
     translations: dict[str, str],
@@ -139,15 +189,19 @@ def sync_translations(
 ) -> int:
     """Recompute display names from the original CSV metadata, without network.
 
-    ``overrides`` rename the file IDs it lists; everything else is derived from
-    the glossary and the source fields.
+    ``overrides`` rename the file IDs it lists, adding a row for an ID the release
+    lacks; everything else is derived from the glossary and the source fields.
+    Returns the number of imported rows.
     """
     overrides = overrides or {}
+    folded = by_folded_id(overrides)
     updates = []
-    for r in con.execute('SELECT id, source_json, spine_remark FROM variants'):
+    for r in con.execute(
+        "SELECT id, source_json, spine_remark FROM variants WHERE student_id<>''"
+    ):
         source = json.loads(r['source_json'])
         translated = translations.get(r['spine_remark'], '').strip()
-        override = overrides.get(source['file_id'])
+        override = folded.get(source['file_id'].casefold())
         given = (override.name if override else '') or source['given_en']
         updates.append((translated, make_display(source, translated, override), given, r['id']))
     with con:
@@ -155,5 +209,6 @@ def sync_translations(
             'UPDATE variants SET spine_remark_en=?, display_name_en=?, given_en=? WHERE id=?',
             updates,
         )
+        sync_extra_variants(con, overrides)
         refresh_revision(con)
     return len(updates)

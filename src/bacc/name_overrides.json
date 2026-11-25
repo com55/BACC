@@ -1,5 +1,10 @@
 {
   "NP0018": {"name": "Oil Drum", "mode": "full"},
   "NP0081": {"name": "Asuna (School)", "mode": "full"},
-  "NP0082": {"name": "Karin (School)", "mode": "full"}
+  "NP0082": {"name": "Karin (School)", "mode": "full"},
+  "CH0038": "Hatsuda",
+  "CH0315": "Sayo",
+  "CH0339": "Manami",
+  "CH0340": "Urara",
+  "CH0341": "Kanon"
 }

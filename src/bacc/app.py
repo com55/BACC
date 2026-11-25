@@ -50,12 +50,14 @@ from .remote import (
 from .revision import Revision, read_revision, refresh_revision
 from .schools import apply_schools, read_schools
 from .translations import (
+    by_folded_id,
     merged_name_overrides,
     merged_translations,
     read_name_overrides,
     read_translations,
     save_name_overrides,
     save_translations,
+    sync_extra_variants,
     sync_translations,
 )
 
@@ -81,6 +83,7 @@ def _prepare(
 ) -> _Snapshot:
     """Build every row up front, so validation failures never reach the database."""
     rows = decode_rows(blob)
+    folded = by_folded_id(overrides)
 
     school_rows: dict[str, tuple] = {}
     student_rows: dict[str, tuple] = {}
@@ -104,7 +107,7 @@ def _prepare(
             sid, (sid, row['given_en'], row['full_en'], school_id or None)
         )
         remark = row['spine_remark']
-        override = overrides.get(row['file_id'])
+        override = folded.get(row['file_id'].casefold())
         english = translations.get(remark, '') if remark else ''
         if remark and not english:
             missing[remark] += 1
@@ -273,14 +276,15 @@ class BlueArchiveCharacterCatalog:
 
     def students(self, school_id: str | None = None) -> list[Student]:
         """Every student, or those of one school, with the English school name."""
-        sql = '''SELECT s.student_id, s.given_en, s.full_en, s.school_id,
+        sql = """SELECT s.student_id, s.given_en, s.full_en, s.school_id,
                         COALESCE(sc.school_name_en, '') AS school_name_en
-                 FROM students s LEFT JOIN schools sc ON sc.school_id = s.school_id'''
+                 FROM students s LEFT JOIN schools sc ON sc.school_id = s.school_id
+                 WHERE s.student_id<>''"""
         if school_id is None:
             rows = self.connection.execute(sql + ' ORDER BY CAST(s.student_id AS INTEGER)')
         else:
             rows = self.connection.execute(
-                sql + ' WHERE s.school_id=? ORDER BY CAST(s.student_id AS INTEGER)', (school_id,)
+                sql + ' AND s.school_id=? ORDER BY CAST(s.student_id AS INTEGER)', (school_id,)
             )
         return [
             Student(
@@ -322,7 +326,9 @@ class BlueArchiveCharacterCatalog:
         return Stats(
             release_tag=meta(con, 'release_tag'),
             updated_at=meta(con, 'updated_at'),
-            students=con.execute('SELECT count(*) FROM students').fetchone()[0],
+            students=con.execute(
+                "SELECT count(*) FROM students WHERE student_id<>''"
+            ).fetchone()[0],
             variants=con.execute('SELECT count(*) FROM variants').fetchone()[0],
             schools=con.execute('SELECT count(*) FROM schools').fetchone()[0],
             untranslated_rows=con.execute(
@@ -384,11 +390,9 @@ class BlueArchiveCharacterCatalog:
     ) -> ImportResult:
         with self._files_lock:
             translations = merged_translations(self.translations_path)
+            overrides = merged_name_overrides(self.name_overrides_path)
             snapshot = _prepare(
-                blob,
-                translations,
-                read_schools(self.schools_path),
-                merged_name_overrides(self.name_overrides_path),
+                blob, translations, read_schools(self.schools_path), overrides
             )
             with con:
                 con.execute('DELETE FROM variants')
@@ -411,6 +415,7 @@ class BlueArchiveCharacterCatalog:
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     snapshot.variants,
                 )
+                sync_extra_variants(con, overrides)
                 set_meta(
                     con,
                     {
@@ -588,9 +593,10 @@ class BlueArchiveCharacterCatalog:
         """Record one name override and refresh the derived names.
 
         ``file_id`` is a file ID such as ``NP0121``; it applies to every variant
-        row that carries it. ``mode='base'`` replaces only the base name, so labels
-        are still appended (``Name (Swimsuit)``); ``mode='full'`` replaces the whole
-        display name. The entry goes into your own file in the data directory
+        row that carries it, ignoring case. A file ID the release does not have gets a
+        row of its own holding just that name. ``mode='base'`` replaces only the base
+        name, so labels are still appended (``Name (Swimsuit)``); ``mode='full'``
+        replaces the whole display name. The entry goes into your own file in the data directory
         (created on the first call), so it survives updates and wins over the
         packaged one. An empty ``name`` removes your entry.
         """
@@ -601,10 +607,10 @@ class BlueArchiveCharacterCatalog:
             raise ValueError(f'mode must be one of {MODES}, not {mode!r}')
         with self._files_lock:
             mine = read_name_overrides(self.name_overrides_path)
+            for key in [k for k in mine if k.casefold() == file_id.casefold()]:
+                del mine[key]  # one entry per file ID, however it was spelled before
             if name.strip():
                 mine[file_id] = NameOverride(name.strip(), mode)
-            else:
-                mine.pop(file_id, None)  # no entry of your own: the packaged one applies
             save_name_overrides(self.name_overrides_path, mine)
             return self._sync(self.connection)
 
